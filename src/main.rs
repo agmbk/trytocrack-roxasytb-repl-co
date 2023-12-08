@@ -58,7 +58,6 @@ impl Bruteforce {
                 self.password.reset();
                 credentials = Credentials::new(&self.username.value, &self.password.value);
             } else {
-                println!("Failed to find credentials");
                 break;
             }
 
@@ -76,7 +75,8 @@ impl Bruteforce {
 
             // Do not exit as there is many matches
             if credentials.verify(hash) {
-                file.write_all(credentials.to_string().as_bytes()).unwrap();
+                file.write_all(format!("{}\n", credentials).as_bytes())
+                    .unwrap();
             }
         }
     }
