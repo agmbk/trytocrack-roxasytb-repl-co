@@ -4,8 +4,8 @@ use std::io::Write;
 use std::num::NonZeroUsize;
 
 struct Bruteforce {
-    username: StringGenerator,
-    password: StringGenerator,
+    username: StringGenerator<'static>,
+    password: StringGenerator<'static>,
 }
 
 struct Credentials<'a> {
@@ -13,9 +13,9 @@ struct Credentials<'a> {
     password: &'a [u8],
 }
 
-struct StringGenerator {
+struct StringGenerator<'a> {
     /// A valid UTF-8 character set.
-    chars: &'static [u8],
+    chars: &'a [u8],
     /// The last character in the character set.
     last_char: u8,
     /// The first character in the character set.
@@ -31,16 +31,15 @@ struct StringGenerator {
 
 impl Bruteforce {
     fn new(chars: &'static [u8], min_length: NonZeroUsize, max_length: NonZeroUsize) -> Self {
-        Self {
-            username: StringGenerator::new(chars, min_length, max_length),
-            password: StringGenerator::new(chars, min_length, max_length),
-        }
+        let mut username = StringGenerator::new(chars, min_length, max_length);
+        let mut password = StringGenerator::new(chars, min_length, max_length);
+        username.init();
+        password.init();
+
+        Self { username, password }
     }
 
     fn run(&mut self, hash: i32) {
-        self.username.init();
-        self.password.init();
-
         let mut credentials: Credentials;
 
         let mut file = OpenOptions::new()
@@ -120,7 +119,7 @@ impl<'a> Display for Credentials<'a> {
     }
 }
 
-impl StringGenerator {
+impl<'a> StringGenerator<'a> {
     fn new(chars: &'static [u8], min_length: NonZeroUsize, max_length: NonZeroUsize) -> Self {
         if min_length.get() > max_length.get() {
             panic!("min_length must be less than or equal to max_length");
@@ -153,7 +152,7 @@ impl StringGenerator {
     }
 }
 
-impl Iterator for StringGenerator {
+impl<'a> Iterator for StringGenerator<'a> {
     type Item = ();
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -184,7 +183,7 @@ impl Iterator for StringGenerator {
     }
 }
 
-impl Display for StringGenerator {
+impl<'a> Display for StringGenerator<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         for char in &self.value {
             write!(f, "{}", *char as char)?;
