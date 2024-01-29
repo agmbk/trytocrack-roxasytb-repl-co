@@ -1,11 +1,13 @@
+//! Bruteforce optimized for performance, not best practices.
+
 use std::fmt::Display;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::Write as _;
 use std::num::NonZeroUsize;
 
 struct Bruteforce {
-    username: StringGenerator<'static>,
-    password: StringGenerator<'static>,
+    username: StringGenerator,
+    password: StringGenerator,
 }
 
 struct Credentials<'a> {
@@ -13,15 +15,17 @@ struct Credentials<'a> {
     password: &'a [u8],
 }
 
-struct StringGenerator<'a> {
+struct StringGenerator {
     /// A valid UTF-8 character set.
-    chars: &'a [u8],
+    chars: &'static [u8],
     /// The last character in the character set.
     last_char: u8,
     /// The first character in the character set.
     first_char: u8,
     /// The current value containing characters only from the given character set.
     value: Vec<u8>,
+    /// The indexes of the characters in the character set for the current value.
+    indexes: Vec<usize>,
     /// The minimum length of the generated string.
     min_length: usize,
     /// The maximum length of the generated string.
@@ -31,12 +35,10 @@ struct StringGenerator<'a> {
 
 impl Bruteforce {
     fn new(chars: &'static [u8], min_length: NonZeroUsize, max_length: NonZeroUsize) -> Self {
-        let mut username = StringGenerator::new(chars, min_length, max_length);
-        let mut password = StringGenerator::new(chars, min_length, max_length);
-        username.init();
-        password.init();
-
-        Self { username, password }
+        Self {
+            username: StringGenerator::new(chars, min_length, max_length),
+            password: StringGenerator::new(chars, min_length, max_length),
+        }
     }
 
     fn run(&mut self, hash: i32) {
@@ -63,11 +65,11 @@ impl Bruteforce {
             if iterations % 100_000_000 == 0 {
                 println!(
                     "Iterations: {} M/s | {}",
-                    if start.elapsed().as_secs() == 0 {
-                        iterations / 1_000_000
+                    if start.elapsed().as_secs_f64() == 0.0 {
+                        iterations
                     } else {
-                        iterations / start.elapsed().as_secs() as usize / 1_000_000
-                    },
+                        (iterations as f64 / start.elapsed().as_secs_f64()) as usize
+                    } / 1_000_000,
                     credentials
                 );
             }
@@ -82,6 +84,7 @@ impl Bruteforce {
 }
 
 impl<'a> Credentials<'a> {
+    /// Username and password must be valid UTF-8 strings.
     fn new(username: &'a [u8], password: &'a [u8]) -> Self {
         Self { username, password }
     }
@@ -107,52 +110,54 @@ impl<'a> Credentials<'a> {
 
 impl<'a> Display for Credentials<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "username: ")?;
-        for char in self.username {
-            write!(f, "{}", *char as char)?;
-        }
-        write!(f, " password: ")?;
-        for char in self.password {
-            write!(f, "{}", *char as char)?;
-        }
+        f.write_str("username: ")?;
+        // The username is a known valid UTF-8 string.
+        unsafe { f.write_str(std::str::from_utf8_unchecked(self.username))? };
+        f.write_str(" password: ")?;
+        // The password is a known valid UTF-8 string.
+        unsafe { f.write_str(std::str::from_utf8_unchecked(self.password))? };
         Ok(())
     }
 }
 
-impl<'a> StringGenerator<'a> {
+impl StringGenerator {
     fn new(chars: &'static [u8], min_length: NonZeroUsize, max_length: NonZeroUsize) -> Self {
-        if min_length.get() > max_length.get() {
-            panic!("min_length must be less than or equal to max_length");
-        }
-        if chars.is_empty() {
-            panic!("chars must not be empty");
-        }
-
         let min_length = min_length.get();
         let max_length = max_length.get();
 
-        Self {
+        assert!(
+            min_length <= max_length,
+            "min_length must be less than or equal to max_length"
+        );
+        assert!(!chars.is_empty(), "chars must not be empty");
+
+        let mut generator = Self {
             chars,
             last_char: *chars.last().unwrap(),
             first_char: *chars.first().unwrap(),
             value: Vec::with_capacity(max_length),
+            indexes: Vec::with_capacity(max_length),
             min_length,
             max_length,
             started: false,
-        }
-    }
-
-    fn init(&mut self) {
-        self.reset();
+        };
+        generator.reset();
+        generator
     }
 
     fn reset(&mut self) {
         self.value.clear();
         self.value.extend(self.chars.iter().take(self.min_length));
+        self.indexes.clear();
+        self.indexes.extend(
+            self.value
+                .iter()
+                .map(|&c| self.chars.iter().position(|&char| char == c).unwrap()),
+        );
     }
 }
 
-impl<'a> Iterator for StringGenerator<'a> {
+impl Iterator for StringGenerator {
     type Item = ();
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -161,21 +166,23 @@ impl<'a> Iterator for StringGenerator<'a> {
             return Some(());
         }
 
-        for i in (0..self.value.len()).rev() {
+        let mut i = self.value.len();
+        while i > 0 {
+            i -= 1;
             if self.value[i] == self.last_char {
                 self.value[i] = self.first_char;
+                self.indexes[i] = 0;
             } else {
-                let idx = {
-                    let char = self.value[i];
-                    self.chars.iter().position(|&c| c == char).unwrap()
-                };
-                self.value[i] = self.chars[idx + 1];
+                let idx = self.indexes[i] + 1;
+                self.value[i] = self.chars[idx];
+                self.indexes[i] = idx;
                 return Some(());
             }
         }
 
         if self.value.len() < self.max_length {
             self.value.push(self.chars[0]);
+            self.indexes.push(0);
             return Some(());
         }
 
@@ -183,12 +190,10 @@ impl<'a> Iterator for StringGenerator<'a> {
     }
 }
 
-impl<'a> Display for StringGenerator<'a> {
+impl Display for StringGenerator {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        for char in &self.value {
-            write!(f, "{}", *char as char)?;
-        }
-        Ok(())
+        // The value is a known valid UTF-8 string.
+        unsafe { f.write_str(std::str::from_utf8_unchecked(&self.value)) }
     }
 }
 
@@ -199,7 +204,7 @@ fn main() {
     let mut generator = Bruteforce::new(
         CHARS,
         NonZeroUsize::new(1).unwrap(),
-        NonZeroUsize::new(6).unwrap(),
+        NonZeroUsize::new(3).unwrap(),
     );
 
     let start = std::time::Instant::now();
@@ -214,16 +219,58 @@ fn main() {
     // Time: 9974ms - With precomputed values, sadly it busts the stack fast enough
     // Time: 28973ms
     // Time: 26977ms - 5x improvement
+    // Time: 26886ms
+    // Time: 15511ms - 8x improvement
     generator.run(HASH);
 
     println!("Time: {}ms", start.elapsed().as_millis());
 }
 
-#[test]
-fn compute_hash() {
-    const HASH: i32 = -1608160232;
+#[cfg(test)]
+mod test {
+    use std::num::NonZeroUsize;
 
-    let credential = Credentials::new(b"foo", b"bar");
+    use super::{Credentials, StringGenerator};
 
-    assert!(credential.verify(HASH));
+    #[test]
+    fn compute_hash() {
+        const HASH: i32 = -1608160232;
+
+        let credential = Credentials::new(b"foo", b"bar");
+
+        assert!(credential.verify(HASH));
+    }
+
+    #[test]
+    fn string_iterator() {
+        let mut generator = StringGenerator::new(
+            b"abc",
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(3).unwrap(),
+        );
+
+        let expected = vec![
+            "a", "b", "c", "aa", "ab", "ac", "ba", "bb", "bc", "ca", "cb", "cc", "aaa", "aab",
+            "aac", "aba", "abb", "abc", "aca", "acb", "acc", "baa", "bab", "bac", "bba", "bbb",
+            "bbc", "bca", "bcb", "bcc", "caa", "cab", "cac", "cba", "cbb", "cbc", "cca", "ccb",
+            "ccc",
+        ];
+
+        let result = (0..39)
+            .map(|_| {
+                assert!(generator.next().is_some());
+                generator.to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(result, expected);
+        assert_eq!(generator.value, b"ccc");
+        assert_eq!(generator.indexes, &[2, 2, 2]);
+        assert!(generator.next().is_none());
+
+        generator.reset();
+
+        assert_eq!(generator.value, b"a");
+        assert_eq!(generator.indexes, &[0]);
+    }
 }
